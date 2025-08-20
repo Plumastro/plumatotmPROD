@@ -1,0 +1,281 @@
+{% comment %} Section: Form astro → envoi à une API {% endcomment %}
+
+<section id="astro-inputs" class="page-width">
+  <form id="astro-form" novalidate>
+    <div class="form-group">
+      <label for="astro-name">Nom (optionnel)</label>
+      <input id="astro-name" name="name" type="text" placeholder="Ex : Marie Dupont" />
+      <small>Pour référence personnelle</small>
+    </div>
+
+    <div class="form-group">
+      <label for="astro-date">Date de naissance *</label>
+      <input id="astro-date" name="date" type="date" required placeholder="1990-05-15" />
+      <small>Format : AAAA-MM-JJ</small>
+    </div>
+
+    <div class="form-group">
+      <label for="astro-time">Heure de naissance *</label>
+      <input id="astro-time" name="time" type="time" required placeholder="14:30" />
+      <small>Format 24h : HH:MM</small>
+    </div>
+
+    <div class="form-group">
+      <label for="astro-lat">Latitude du lieu de naissance *</label>
+      <input id="astro-lat" name="lat" type="number" step="any" required min="-90" max="90" placeholder="48.8566" />
+      <small>Entre -90 et 90 (ex: 48.8566 pour Paris)</small>
+    </div>
+
+    <div class="form-group">
+      <label for="astro-lon">Longitude du lieu de naissance *</label>
+      <input id="astro-lon" name="lon" type="number" step="any" required min="-180" max="180" placeholder="2.3522" />
+      <small>Entre -180 et 180 (ex: 2.3522 pour Paris)</small>
+    </div>
+
+    <button id="astro-submit" type="submit" class="btn-primary">
+      <span class="btn-text">Analyser mon thème astral</span>
+      <span class="btn-loading" style="display:none;">Analyse en cours...</span>
+    </button>
+  </form>
+
+  <!-- Zone de résultats -->
+  <div id="astro-result" style="margin-top:2rem; display:none;">
+    <h3>Résultats de votre analyse</h3>
+    <div id="astro-loading" style="display:none;">
+      <p>🔄 Calcul en cours...</p>
+    </div>
+    <div id="astro-error" style="display:none; color:red;">
+      <p>❌ <span id="error-message"></span></p>
+    </div>
+    <div id="astro-success" style="display:none;">
+      <div id="top-animals"></div>
+      <div id="chart-container"></div>
+      <pre id="full-response" style="margin-top:1rem; white-space:pre-wrap; font-size:0.8em; background:#f5f5f5; padding:1rem; border-radius:4px; display:none;"></pre>
+      <button id="toggle-details" onclick="toggleDetails()">Voir les détails techniques</button>
+    </div>
+  </div>
+</section>
+
+<style>
+.form-group {
+  margin-bottom: 1.5rem;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+}
+
+.form-group input {
+  width: 100%;
+  padding: 0.75rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 1rem;
+}
+
+.form-group small {
+  display: block;
+  margin-top: 0.25rem;
+  color: #666;
+  font-size: 0.875rem;
+}
+
+.btn-primary {
+  background: #007cba;
+  color: white;
+  padding: 1rem 2rem;
+  border: none;
+  border-radius: 4px;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: background 0.3s;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #005a87;
+}
+
+.btn-primary:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+
+#astro-result {
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 1.5rem;
+  background: #f9f9f9;
+}
+
+.animal-card {
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.animal-rank {
+  font-size: 1.5rem;
+  font-weight: bold;
+  color: #007cba;
+}
+
+.animal-score {
+  font-size: 1.2rem;
+  color: #28a745;
+}
+</style>
+
+<script>
+(function(){
+  const root = document.getElementById('astro-inputs');
+  if (!root || root.dataset.initialized) return;
+  root.dataset.initialized = 'true';
+
+  const API_URL = '{{ section.settings.api_url | strip | escape }}';
+  const form = document.getElementById('astro-form');
+  const resultEl = document.getElementById('astro-result');
+  const submitBtn = document.getElementById('astro-submit');
+  const btnText = submitBtn.querySelector('.btn-text');
+  const btnLoading = submitBtn.querySelector('.btn-loading');
+
+  // Validation functions
+  const isValidDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s);
+  const isValidTime = (s) => /^\d{2}:\d{2}$/.test(s) && Number(s.slice(0,2)) < 24 && Number(s.slice(3,5)) < 60;
+
+  // Helper functions
+  function showLoading() {
+    resultEl.style.display = 'block';
+    document.getElementById('astro-loading').style.display = 'block';
+    document.getElementById('astro-error').style.display = 'none';
+    document.getElementById('astro-success').style.display = 'none';
+    submitBtn.disabled = true;
+    btnText.style.display = 'none';
+    btnLoading.style.display = 'inline';
+  }
+
+  function showError(message) {
+    document.getElementById('astro-loading').style.display = 'none';
+    document.getElementById('astro-error').style.display = 'block';
+    document.getElementById('error-message').textContent = message;
+    submitBtn.disabled = false;
+    btnText.style.display = 'inline';
+    btnLoading.style.display = 'none';
+  }
+
+  function showSuccess(data) {
+    document.getElementById('astro-loading').style.display = 'none';
+    document.getElementById('astro-error').style.display = 'none';
+    document.getElementById('astro-success').style.display = 'block';
+    
+    // Afficher les top 3 animaux
+    const topAnimalsEl = document.getElementById('top-animals');
+    if (data.data && data.data.top_3_animals) {
+      topAnimalsEl.innerHTML = '<h4>🐾 Vos animaux compatibles</h4>';
+      data.data.top_3_animals.forEach((animal, index) => {
+        const rank = index + 1;
+        const emoji = rank === 1 ? '🥇' : rank === 2 ? '🥈' : '🥉';
+        topAnimalsEl.innerHTML += `
+          <div class="animal-card">
+            <div class="animal-rank">${emoji} ${rank}er</div>
+            <h5>${animal.ANIMAL}</h5>
+            <div class="animal-score">Score: ${animal.TOTAL_SCORE.toFixed(1)}</div>
+          </div>
+        `;
+      });
+    }
+
+    // Stocker la réponse complète
+    document.getElementById('full-response').textContent = JSON.stringify(data, null, 2);
+    
+    submitBtn.disabled = false;
+    btnText.style.display = 'inline';
+    btnLoading.style.display = 'none';
+  }
+
+  // Toggle details function
+  window.toggleDetails = function() {
+    const detailsEl = document.getElementById('full-response');
+    const toggleBtn = document.getElementById('toggle-details');
+    if (detailsEl.style.display === 'none') {
+      detailsEl.style.display = 'block';
+      toggleBtn.textContent = 'Masquer les détails techniques';
+    } else {
+      detailsEl.style.display = 'none';
+      toggleBtn.textContent = 'Voir les détails techniques';
+    }
+  };
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    
+    const fd = new FormData(form);
+    const payload = {
+      name: (fd.get('name') || '').toString().trim(),
+      date: (fd.get('date') || '').toString().trim(),
+      time: (fd.get('time') || '').toString().trim(),
+      lat: parseFloat(fd.get('lat')),
+      lon: parseFloat(fd.get('lon')),
+    };
+
+    // Validations
+    if (!isValidDate(payload.date)) {
+      return showError('Format de date invalide (attendu AAAA-MM-JJ).');
+    }
+    if (!isValidTime(payload.time)) {
+      return showError('Format d\'heure invalide (attendu HH:MM 24h).');
+    }
+    if (Number.isNaN(payload.lat) || payload.lat < -90 || payload.lat > 90) {
+      return showError('Latitude invalide (doit être entre -90 et 90).');
+    }
+    if (Number.isNaN(payload.lon) || payload.lon < -180 || payload.lon > 180) {
+      return showError('Longitude invalide (doit être entre -180 et 180).');
+    }
+
+    showLoading();
+
+    try {
+      const res = await fetch(API_URL, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(payload)
+      });
+      
+      if (!res.ok) {
+        throw new Error(`Erreur API (${res.status}): ${res.statusText}`);
+      }
+      
+      const json = await res.json();
+      
+      if (json.success) {
+        showSuccess(json);
+      } else {
+        showError(json.error || 'Erreur lors de l\'analyse');
+      }
+      
+    } catch (err) {
+      showError(`Erreur de connexion: ${err.message}`);
+    }
+  });
+})();
+</script>
+
+{% schema %}
+{
+  "name": "Formulaire Astro → API",
+  "settings": [
+    {
+      "type": "text",
+      "id": "api_url",
+      "label": "URL de l'API PLUMATOTM",
+      "default": "https://plumatotm-api.onrender.com/analyze",
+      "info": "URL de votre API déployée (ex: Render, Vercel, etc.)"
+    }
+  ],
+  "presets": [{ "name": "Formulaire Astro → API" }],
+  "enabled_on": { "templates": ["*"] }
+}
+{% endschema %}

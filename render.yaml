@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: plumatotm-api
+    env: python
+    buildCommand: pip install -r requirements_api.txt
+    startCommand: python plumatotm_api.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.9
+      - key: PORT
+        value: 8000
+    healthCheckPath: /health
+    autoDeploy: true
