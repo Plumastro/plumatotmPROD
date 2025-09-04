@@ -8,3 +8,4 @@ matplotlib==3.7.2
 timezonefinder==6.2.0
 python-multipart==0.0.6
 # Updated Wed Aug 20 22:56:30 CEST 2025
+openai>=1.51.0

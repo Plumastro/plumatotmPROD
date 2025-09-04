@@ -14,12 +14,20 @@ import uvicorn
 import json
 import os
 from datetime import datetime
+from contextlib import suppress
 
 # Import our existing analysis engine
 from plumatotm_core import BirthChartAnalyzer, convert_local_to_utc
 
 # Import radar chart generator
 from plumatotm_radar import RadarChartGenerator
+
+# Optional: OpenAI client for explanations
+with suppress(ImportError):
+    from openai import OpenAI  # type: ignore
+    OPENAI_AVAILABLE = True
+else:
+    OPENAI_AVAILABLE = False
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -36,6 +44,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Environment configuration
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 # Initialize the analyzer with our data files
 try:
@@ -98,6 +109,61 @@ class AnalysisResponse(BaseModel):
     message: str
     data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+
+
+def _generate_top_animal_explanation(top_animal: Dict[str, Any], context: Dict[str, Any]) -> str:
+    """
+    Generate a short explanation for the top animal using OpenAI if available.
+    Falls back to a deterministic text if OpenAI is not configured.
+    """
+    # Basic fallback if SDK or key not available
+    if not OPENAI_AVAILABLE or not OPENAI_API_KEY:
+        name = str(top_animal.get("ANIMAL", "Animal"))
+        score = top_animal.get("TOTAL_SCORE")
+        return (
+            f"{name}: votre animal totem principal. Ce profil ressort en première position "
+            f"avec un score {score}. Il symbolise votre énergie dominante et vos qualités "
+            f"naturelles."
+        )
+
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        animal_name = str(top_animal.get("ANIMAL", "Animal"))
+        score = top_animal.get("TOTAL_SCORE")
+        percentages = context.get("top3_percentage_strength", {})
+        planets = context.get("birth_chart", {}).get("planets", {})
+
+        system_prompt = (
+            "Tu es un expert en symbolique animale et astrologie moderne. "
+            "Tu écris des explications courtes, positives, concrètes. "
+            "Ton ton est bienveillant, clair, sans jargon inutile. "
+            "Langue: français. Longueur: ~120-180 mots."
+        )
+        user_prompt = (
+            "Concisément, explique l'animal totem qui ressort en 1ère position.\n"
+            f"- Animal: {animal_name}\n"
+            f"- Score total: {score}\n"
+            f"- Pourcentages forces (top3): {percentages}\n"
+            f"- Indices planétaires (si utiles): {list(planets.keys())[:5]}\n"
+            "Structure attendue: 2-3 phrases sur l'essence, 1-2 sur les forces, 1 sur les conseils."
+        )
+
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.7,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        return completion.choices[0].message.content or ""
+    except Exception:
+        # Silent fallback
+        name = str(top_animal.get("ANIMAL", "Animal"))
+        return (
+            f"{name}: votre animal totem principal. Il met en lumière vos atouts naturels "
+            f"et la direction la plus porteuse pour vous en ce moment."
+        )
 
 @app.get("/")
 async def root():
@@ -197,6 +263,81 @@ async def analyze_birth_data(request: BirthDataRequest):
             success=False,
             message="Analysis failed",
             error=str(e)
+        )
+
+
+@app.post("/analyze-with-explanation", response_model=AnalysisResponse)
+async def analyze_with_explanation(request: BirthDataRequest):
+    """
+    Analyze birth data and return scores plus a short OpenAI-generated
+    explanation for the top animal.
+    """
+    if analyzer is None:
+        raise HTTPException(status_code=500, detail="Analysis engine not available")
+
+    try:
+        utc_time = convert_local_to_utc(request.date, request.time, request.lat, request.lon)
+        analyzer.run_analysis(request.date, utc_time, request.lat, request.lon)
+
+        with open("outputs/result.json", 'r', encoding='utf-8') as f:
+            results = json.load(f)
+
+        animal_totals = results.get("animal_totals", [])
+        top_3_animals = animal_totals[:3] if animal_totals else []
+        top_animal = top_3_animals[0] if top_3_animals else None
+
+        radar_charts = {}
+        if radar_generator is not None:
+            with suppress(Exception):
+                temp_result_data = {
+                    "data": {
+                        "top_3_animals": top_3_animals,
+                        "top3_percentage_strength": results.get("top3_percentage_strength", {})
+                    }
+                }
+                top_chart_path = radar_generator.generate_top_animal_radar(temp_result_data)
+                radar_charts["top_animal_chart"] = top_chart_path
+
+        explanation = None
+        if top_animal:
+            context = {
+                "top3_percentage_strength": results.get("top3_percentage_strength", {}),
+                "birth_chart": results.get("birth_chart", {}),
+            }
+            explanation = _generate_top_animal_explanation(top_animal, context)
+
+        response_data = {
+            "birth_data": {
+                "date": request.date,
+                "time": request.time,
+                "utc_time": utc_time,
+                "lat": request.lat,
+                "lon": request.lon,
+                "name": request.name,
+            },
+            "birth_chart": results.get("birth_chart", {}),
+            "planet_weights": results.get("planet_weights", {}),
+            "top_3_animals": top_3_animals,
+            "all_animals": animal_totals,
+            "analysis_summary": {
+                "total_animals_analyzed": len(animal_totals),
+                "top_score": top_3_animals[0]["TOTAL_SCORE"] if top_3_animals else 0,
+            },
+            "radar_charts": radar_charts,
+            "top_animal_explanation": explanation,
+            "explanation_provider": "openai" if OPENAI_AVAILABLE and OPENAI_API_KEY else "local-fallback",
+        }
+
+        return AnalysisResponse(
+            success=True,
+            message="Analysis completed successfully (with explanation)",
+            data=response_data,
+        )
+    except Exception as e:
+        return AnalysisResponse(
+            success=False,
+            message="Analysis with explanation failed",
+            error=str(e),
         )
 
 @app.get("/animals")
